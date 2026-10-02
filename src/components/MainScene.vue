@@ -19,6 +19,14 @@ function isOpen(c) { return !c.finished && c.id === nextId.value }
 // 中断续看：未结算的比赛记录（开赛瞬间生成，奖励尚未落账）
 const active = computed(() => store.activeRace)
 const activeCid = computed(() => active.value?.record?.circuit?.id ?? null)
+// 本战排班（下一站实际出赛阵容，服务端解析结果）
+const lineupTxt = computed(() => {
+  const r = store.lineup?.resolved
+  if (!r) return ''
+  const p = r.pilot ? r.pilot.name + (r.pilot.auto ? '·自动' : '') : '无机师'
+  const m = r.mech ? r.mech.name + (r.mech.auto ? '·自动' : '') : '无技工'
+  return `${p} / ${m} / ${r.ship?.name || '自有艇'}`
+})
 
 const starting = ref(false)
 // 玩家游艇巡航位置：比赛中停靠在参赛岛；否则锁定当前待赛站；全部完赛后停靠终点岛
@@ -145,6 +153,7 @@ function resume() { if (active.value) emit('view', active.value, 'live') }
       <div class="ph-label">赛季航线进度</div>
       <div class="ph-bar"><i :style="{ width: (done / total * 100) + '%' }"></i></div>
       <div class="ph-nums mono">{{ done }} / {{ total }} 站完赛</div>
+      <div v-if="lineupTxt" class="ph-lineup" title="机库「赛事排班」中可调整下一站出赛阵容">🗓️ {{ lineupTxt }}</div>
     </div>
   </div>
 </template>

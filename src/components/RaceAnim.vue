@@ -151,6 +151,7 @@ onUnmounted(() => { if (raf) cancelAnimationFrame(raf) })
         </span>
         <span class="fx-chip">🔩 部件健康 <em>{{ rec.factors.parts_dur }}%</em></span>
         <span class="fx-chip" v-if="rec.factors.rental">🛟 租约艇 <em>{{ rec.factors.rental.name }}</em></span>
+        <span class="fx-chip" v-if="rec.factors.lineup">🗓️ {{ { auto: '自动排班', own: '排班·自有艇', rental: '排班·租赁艇' }[rec.factors.lineup.shipMode] || '排班' }}</span>
         <span class="fx-chip">🧑‍✈️ {{ rec.factors.pilot ? rec.factors.pilot.name : '无机师' }}</span>
         <span class="fx-chip">🔧 {{ rec.factors.mech ? rec.factors.mech.name : '无技工' }}</span>
         <span class="fx-more">{{ showFactors ? '收起 ▲' : '影响明细 ▼' }}</span>

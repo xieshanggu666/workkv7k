@@ -36,6 +36,28 @@ async function returnShip() {
   await store.returnShip()
   returning.value = false
 }
+
+/* ---------- 赛事排班：下一站出赛的机师 / 技工 / 飞艇（开赛时快照进比赛记录） ---------- */
+const lineup = computed(() => store.lineup)
+const savingLineup = ref(false)
+async function setLineup(patch) {
+  if (savingLineup.value) return
+  savingLineup.value = true
+  const r = await store.setLineup(patch)
+  if (r?.ok) store.tip(r.msg || '排班已更新')
+  savingLineup.value = false
+}
+const setPilot = e => setLineup({ pilotId: e.target.value === '' ? null : Number(e.target.value) })
+const setMech = e => setLineup({ mechanicId: e.target.value === '' ? null : Number(e.target.value) })
+const setShip = m => setLineup({ shipMode: m })
+// 下一站实际出赛阵容一句话（服务端解析结果，含自动回落标记）
+const lineupNext = computed(() => {
+  const r = lineup.value?.resolved
+  if (!r) return ''
+  const p = r.pilot ? r.pilot.name + (r.pilot.auto ? '（自动）' : '') : '无机师'
+  const m = r.mech ? r.mech.name + (r.mech.auto ? '（自动）' : '') : '无技工'
+  return `${p} · ${m} · ${r.ship?.name || '自有艇'}`
+})
 </script>
 
 <template>
@@ -73,6 +95,48 @@ async function returnShip() {
             {{ store.airship.rental ? '🛟 租约艇由出租方整备' : '🔧 维护部件' }}
           </button>
         </div>
+
+        <!-- 赛事排班：安排下一站出赛的机师/技工/飞艇，开赛瞬间快照进比赛记录 -->
+        <section>
+          <div class="sec-h">
+            <b>🗓️ 赛事排班</b><span class="d-sub">下一站出赛阵容 · 开赛时快照</span>
+          </div>
+          <div class="rent-card">
+            <div class="lu-row">
+              <span class="lu-label">🧑‍✈️ 机师</span>
+              <select :value="lineup?.pilotId ?? ''" :disabled="savingLineup" @change="setPilot">
+                <option value="">自动 · 最强机师</option>
+                <option v-for="p in store.state?.pilots || []" :key="p.id" :value="p.id">
+                  {{ p.name }}（技巧{{ p.skill }} · 胆识{{ p.courage }}）
+                </option>
+              </select>
+            </div>
+            <div class="lu-row">
+              <span class="lu-label">🔧 技工</span>
+              <select :value="lineup?.mechanicId ?? ''" :disabled="savingLineup" @change="setMech">
+                <option value="">自动 · 最强技工</option>
+                <option v-for="m in store.state?.mechanics || []" :key="m.id" :value="m.id">
+                  {{ m.name }}（技能{{ m.skill }}）
+                </option>
+              </select>
+            </div>
+            <div class="lu-row">
+              <span class="lu-label">🛸 出赛飞艇</span>
+              <div class="lu-modes">
+                <button class="btn sm" :class="lineup?.shipMode === 'auto' ? 'primary' : 'ghost'"
+                  :disabled="savingLineup" @click="setShip('auto')">自动</button>
+                <button class="btn sm" :class="lineup?.shipMode === 'own' ? 'primary' : 'ghost'"
+                  :disabled="savingLineup" @click="setShip('own')">自有艇</button>
+                <button class="btn sm" :class="lineup?.shipMode === 'rental' ? 'primary' : 'ghost'"
+                  :disabled="savingLineup" @click="setShip('rental')">租赁艇</button>
+              </div>
+            </div>
+            <div class="lu-next">下一站：{{ lineupNext }}</div>
+            <div v-if="lineup?.rentalMissing" class="lu-warn">
+              ⚠️ 排班指定租赁艇出赛，但当前没有在履租约，签约后方可开赛
+            </div>
+          </div>
+        </section>
 
         <!-- 飞艇租赁：签约扣押金+租金，比赛磨损记入租约，归还时按磨损结算退款 -->
         <section>
@@ -175,7 +239,7 @@ async function returnShip() {
             <div v-for="p in store.state?.pilots || []" :key="p.id" class="crew-row">
               <div class="crew-ava" :style="{ background: 'linear-gradient(135deg,var(--gold2),var(--violet))' }">{{ p.name[0] }}</div>
               <div class="crew-m">
-                <div class="cm-name">{{ p.name }}<span class="tag b sm-tag">技巧{{ p.skill }}</span></div>
+                <div class="cm-name">{{ p.name }}<span class="tag b sm-tag">技巧{{ p.skill }}</span><span v-if="store.lineup?.pilotId === p.id" class="tag o sm-tag">已排班</span></div>
                 <div class="cm-sub">胆识 {{ p.courage }} · 经验 {{ p.exp }} · 心情 {{ p.mood }}</div>
               </div>
               <button class="btn ghost sm" @click="store.train(p.id)">🎓</button>
@@ -193,7 +257,7 @@ async function returnShip() {
             <div v-for="m in store.state?.mechanics || []" :key="m.id" class="crew-row">
               <div class="crew-ava" style="background:linear-gradient(135deg,var(--mint),var(--sky))">{{ m.name[0] }}</div>
               <div class="crew-m">
-                <div class="cm-name">{{ m.name }}<span class="tag m sm-tag">技能{{ m.skill }}</span></div>
+                <div class="cm-name">{{ m.name }}<span class="tag m sm-tag">技能{{ m.skill }}</span><span v-if="store.lineup?.mechanicId === m.id" class="tag o sm-tag">已排班</span></div>
                 <div class="cm-sub">心情 {{ m.mood }}</div>
               </div>
             </div>

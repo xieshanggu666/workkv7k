@@ -194,9 +194,9 @@ function raceRental(rec) {
   const rtId = rec?.factors?.rental?.id
   return rtId ? get('SELECT * FROM rentals WHERE id=?', rtId) : null
 }
-export function fleetStats() {
-  // 租约期间车队以租赁艇出赛：基础四项与部件健康取自租约快照，自有艇入库封存不磨损
-  const rt = activeRental()
+export function fleetStats(rt = activeRental()) {
+  // 租约期间车队以租赁艇出赛：基础四项与部件健康取自租约快照，自有艇入库封存不磨损。
+  // 出赛艇由调用方按排班解析结果传入（默认沿用旧行为：有在履租约即租约艇）
   const a = rt || airship()
   const up = all('SELECT * FROM upgrades WHERE equipped=1')
   const s = { speed: a.speed, dur: a.dur, turn: a.turn, acc: a.acc, name: a.name, id: a.id, parts_dur: a.parts_dur, hp: a.hp ?? 100 }
@@ -206,6 +206,47 @@ export function fleetStats() {
 }
 function leadPilot() { return all('SELECT * FROM pilots ORDER BY (skill+courage) DESC')[0] || null }
 function topMech() { return all('SELECT * FROM mechanics ORDER BY skill DESC')[0] || null }
+
+/* ================= 赛事排班：机师 / 技工 / 出赛艇（服务端唯一事实来源） =================
+ * 排班存于单行表 lineup（id=1），开赛瞬间由 resolveLineup 解析为实际出赛人选与出赛艇，
+ * 并快照进比赛记录（factors.pilot / factors.mech / factors.rental / factors.lineup）。
+ * 结算、越站回滚、历史回放一律只认快照——赛后调整排班绝不影响已开赛的比赛。
+ */
+const SHIP_MODES = ['auto', 'own', 'rental']
+function lineupRow() { return get('SELECT * FROM lineup WHERE id=1') || { id: 1, pilot_id: null, mechanic_id: null, ship_mode: 'auto' } }
+function ensureLineup() { run("INSERT OR IGNORE INTO lineup (id, ship_mode) VALUES (1, 'auto')") }
+// 解析排班 → 本场实际出赛阵容。指定人员已离队（脏数据）时回落自动，绝不让比赛无法生成
+function resolveLineup() {
+  const l = lineupRow()
+  const pilotSet = l.pilot_id ? get('SELECT * FROM pilots WHERE id=?', l.pilot_id) : null
+  const mechSet = l.mechanic_id ? get('SELECT * FROM mechanics WHERE id=?', l.mechanic_id) : null
+  const mode = SHIP_MODES.includes(l.ship_mode) ? l.ship_mode : 'auto'
+  const rt = activeRental()
+  // auto：租约在履即租约艇（沿用旧行为）；own：自有艇出赛（租约不消耗场次与磨损）；rental：必须租约艇
+  const useRental = mode === 'own' ? false : !!rt
+  return {
+    row: l, mode,
+    pilot: pilotSet || leadPilot(), pilotAuto: !pilotSet,
+    mech: mechSet || topMech(), mechAuto: !mechSet,
+    rental: useRental ? rt : null,
+    rentalMissing: mode === 'rental' && !rt   // 排班指定租赁艇但无在履租约：开赛时拦截
+  }
+}
+// 对外排班视图：原始排班 + 下一站实际出赛阵容（含自动回落标记与缺租约警告）
+function lineupPayload() {
+  const lu = resolveLineup()
+  return {
+    pilotId: lu.row.pilot_id, mechanicId: lu.row.mechanic_id, shipMode: lu.mode,
+    resolved: {
+      pilot: lu.pilot ? { id: lu.pilot.id, name: lu.pilot.name, auto: lu.pilotAuto } : null,
+      mech: lu.mech ? { id: lu.mech.id, name: lu.mech.name, auto: lu.mechAuto } : null,
+      ship: lu.rental
+        ? { kind: 'rental', id: lu.rental.id, name: lu.rental.name }
+        : { kind: 'own', name: airship().name }
+    },
+    rentalMissing: lu.rentalMissing
+  }
+}
 function leadership(p) {
   if (!p) return 20
   return (p.skill + p.courage) / 2 * 0.4 + p.exp * 0.15 + (p.mood - 50) * 0.08
@@ -241,9 +282,10 @@ function aiPace(ai, seg, wF, rng) {
 // 生成完整比赛记录（结果在开赛瞬间即确定，后续只是对这份记录的播放与结算）
 function buildRace(c) {
   const t = teamCore()
-  const st = fleetStats()
-  const pilot = leadPilot()
-  const mech = topMech()
+  const lu = resolveLineup()                 // 排班决定本场出赛艇与机师/技工，随即快照进记录
+  const st = fleetStats(lu.rental)
+  const pilot = lu.pilot
+  const mech = lu.mech
   const mods = all('SELECT * FROM upgrades WHERE equipped=1').map(u => ({ id: u.id, name: u.name, slot: u.slot, stat: u.stat, bonus: u.bonus }))
   const lead = leadership(pilot)
   const mechB = mechBonus(mech)
@@ -323,6 +365,8 @@ function buildRace(c) {
       parts_dur: st.parts_dur,
       // 本场出赛租约快照：结算时磨损记入该租约；shipId 供合约条款按指定艇型判定；null = 自有艇出赛
       rental: st.rental ? { id: st.rental.id, shipId: st.rental.shipId, name: st.rental.name } : null,
+      // 本场排班快照：排班原始配置（null = 自动），赛后改排班不影响这份记录
+      lineup: { shipMode: lu.mode, pilotId: lu.row.pilot_id, mechanicId: lu.row.mechanic_id },
       mods,
       pilot: pilot ? { id: pilot.id, name: pilot.name, skill: pilot.skill, courage: pilot.courage, exp: pilot.exp, mood: pilot.mood } : null,
       mech: mech ? { id: mech.id, name: mech.name, skill: mech.skill, mood: mech.mood } : null,
@@ -652,6 +696,7 @@ function reconcileLegacySkips() {
 }
 seed()
 ensureContracts()
+ensureLineup()
 reconcileLegacySkips()
 // 启动兜底：无越站可修（或老库/注入数据导致合约状态与战绩不一致）时，上面的修复不会跑对账；
 // 这里再幂等对账一次，使「已兑现」始终与本赛季已结算战绩一致（重复执行不产生二次发奖）
@@ -661,7 +706,8 @@ try { reconcileContracts(); db.exec('COMMIT') } catch (e) { db.exec('ROLLBACK');
 /* ---------- 共享响应 ---------- */
 const payload = () => {
   const t = teamCore()
-  const st = fleetStats()
+  const lu = resolveLineup()
+  const st = fleetStats(lu.rental)  // 机库主卡展示「下一站实际出赛艇」（排班解析结果）
   const upgrades = all('SELECT * FROM upgrades')
   const pilots = all('SELECT * FROM pilots')
   const mechanics = all('SELECT * FROM mechanics')
@@ -675,6 +721,8 @@ const payload = () => {
   return {
     team: t, airship: st, upgrades, pilots, mechanics, circuits, contracts, log,
     shop: SHOP_ITEMS,
+    // 赛事排班：原始排班 + 下一站实际出赛阵容（机师/技工/出赛艇）
+    lineup: lineupPayload(),
     // 租赁：当前生效租约（null=自有艇出赛）、艇型目录与最近归还记录
     rental: activeRental(),
     rentalShop: RENTAL_SHIPS,
@@ -763,10 +811,46 @@ app.post('/api/train', (req, res) => {
   res.json({ ok: true, msg: '完成特训，技巧+2' })
 })
 
+/* ---------- 赛事排班：安排下一站出赛的机师 / 技工 / 飞艇 ---------- */
+
+// 当前排班 + 下一站实际出赛阵容（含自动回落与缺租约警告）
+app.get('/api/lineup', (_, res) => res.json({ ok: true, ...lineupPayload() }))
+
+// 更新排班：请求体只接受 pilotId / mechanicId / shipMode 三个字段（省略的字段保持原值，
+// null = 恢复自动）；人员 id 必须在车队名册中，其余字段一律忽略。排班在开赛瞬间才快照进
+// 比赛记录，比赛进行中修改只影响下一站，不影响正在播放/结算的记录。
+app.post('/api/lineup', (req, res) => {
+  const b = req.body || {}
+  const cur = lineupRow()
+  let pilotId = cur.pilot_id, mechanicId = cur.mechanic_id, shipMode = cur.ship_mode
+  if ('pilotId' in b) {
+    if (b.pilotId === null) pilotId = null
+    else if (typeof b.pilotId === 'number' && Number.isInteger(b.pilotId) && b.pilotId > 0 &&
+      get('SELECT id FROM pilots WHERE id=?', b.pilotId)) pilotId = b.pilotId
+    else return res.status(400).json({ ok: false, msg: '该机师不在车队名册中' })
+  }
+  if ('mechanicId' in b) {
+    if (b.mechanicId === null) mechanicId = null
+    else if (typeof b.mechanicId === 'number' && Number.isInteger(b.mechanicId) && b.mechanicId > 0 &&
+      get('SELECT id FROM mechanics WHERE id=?', b.mechanicId)) mechanicId = b.mechanicId
+    else return res.status(400).json({ ok: false, msg: '该技工不在车队名册中' })
+  }
+  if ('shipMode' in b) {
+    if (!SHIP_MODES.includes(b.shipMode)) return res.status(400).json({ ok: false, msg: '出赛艇排班无效（auto/own/rental）' })
+    shipMode = b.shipMode
+  }
+  run(`INSERT INTO lineup (id,pilot_id,mechanic_id,ship_mode,updated_at) VALUES (1,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET pilot_id=excluded.pilot_id, mechanic_id=excluded.mechanic_id,
+    ship_mode=excluded.ship_mode, updated_at=excluded.updated_at`,
+    pilotId, mechanicId, shipMode, now())
+  res.json({ ok: true, msg: '排班已更新，下一站生效', ...lineupPayload() })
+})
+
 // 维护
 app.post('/api/maintain', (req, res) => {
-  // 租约期间租赁艇由出租方整备（磨损在归还时计费），自有艇封存，均不可自行维护
-  if (activeRental()) return res.json({ ok: false, msg: '租约期间飞艇由出租方整备，归还租艇后方可维护自有艇' })
+  // 排班出赛艇为租约艇时：租赁艇由出租方整备（磨损在归还时计费），自有艇封存，均不可自行维护；
+  // 排班为自有艇出赛时（即便有在履租约），自有艇正常磨损，可随时维护
+  if (resolveLineup().rental) return res.json({ ok: false, msg: '租约艇由出租方整备；如需维护自有艇，请先将排班出赛艇调整为自有艇' })
   const t = teamCore(); const a = airship()
   const cost = Math.round((100 - a.parts_dur) * 25)
   if (cost < 200 || t.money < 200) return res.status(200).json({ ok: false, cost, msg: cost < 200 ? '部件状态良好，无需维护' : '资金不足' })
@@ -872,8 +956,13 @@ app.post('/api/races/start/:cid', (req, res) => {
   const c = get('SELECT * FROM circuits WHERE id=?', cid)
   if (!c) return res.json({ ok: false, msg: '该赛站不存在' })
   if (c.finished) return res.json({ ok: false, msg: '该站已完赛' })
-  // 租约联动：场次用尽的租约须先在机库归还结算，才能继续参赛（自有艇或再租）
-  const rt = activeRental()
+  // 排班联动：指定租赁艇出赛但无在履租约时拒绝开赛，须先签约或调整排班
+  const lu = resolveLineup()
+  if (lu.rentalMissing) {
+    return res.json({ ok: false, msg: '排班指定租赁艇出赛，但当前没有在履租约，请先在机库签约或调整排班' })
+  }
+  // 租约联动：排班出赛艇为租约艇且场次用尽时，须先在机库归还结算，才能继续参赛
+  const rt = lu.rental
   if (rt && rt.races_used >= rt.max_races) {
     return res.json({ ok: false, msg: `租约《${rt.name}》场次已用完（${rt.races_used}/${rt.max_races}），请先在机库归还租艇` })
   }
@@ -922,9 +1011,10 @@ app.post('/api/races/:id/settle', (req, res) => {
 
 // 重置（重置数据到初始种子）
 app.post('/api/reset', (_, res) => {
-  ['race_log', 'races', 'rentals', 'contracts', 'circuits', 'upgrades', 'mechanics', 'pilots', 'airships', 'team'].forEach(t => { try { run(`DELETE FROM ${t}`) } catch (e) {} })
+  ['race_log', 'races', 'rentals', 'contracts', 'circuits', 'upgrades', 'mechanics', 'pilots', 'airships', 'team', 'lineup'].forEach(t => { try { run(`DELETE FROM ${t}`) } catch (e) {} })
   try { run('DELETE FROM sqlite_sequence') } catch (e) {}
   seed()
+  ensureLineup()
   res.json({ ok: true })
 })
 

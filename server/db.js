@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS rentals (
   created_at TEXT,
   returned_at TEXT
 );
+-- 赛事排班（单行表，id 恒为 1）：车队为下一站安排的机师 / 技工 / 出赛艇。
+-- 人员为 NULL = 自动（最强阵容）；ship_mode = auto（租约在履即租约艇）| own（自有艇）| rental（必须租约艇）。
+-- 开赛瞬间解析并快照进 races.record.factors.lineup，结算与历史修复只认快照，事后改排班不影响已开赛记录
+CREATE TABLE IF NOT EXISTS lineup (
+  id INTEGER PRIMARY KEY CHECK (id=1),
+  pilot_id INTEGER,                      -- 指定机师；NULL = 自动
+  mechanic_id INTEGER,                   -- 指定技工；NULL = 自动
+  ship_mode TEXT NOT NULL DEFAULT 'auto',
+  updated_at TEXT
+);
 -- 比赛记录：动画 / 实时排名 / 最终奖励共用的唯一事实来源
 -- status=running 未完赛（可中断续看）；settled=1 已结算（奖励只发一次，可历史回放）
 CREATE TABLE IF NOT EXISTS races (
