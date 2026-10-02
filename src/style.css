@@ -351,6 +351,46 @@ input:focus { border-color: var(--gold); }
 .rmedal { font-size: 20px; }
 .rpts { color: var(--gold); font-size: 12px; }
 
+/* 赛事排班 */
+.lu-brief {
+  padding: 14px 16px; border-radius: 15px;
+  background: linear-gradient(135deg, rgba(255,184,92,.18), rgba(177,156,255,.12));
+  border: 1px solid rgba(255,215,106,.4); display: flex; flex-direction: column; gap: 8px;
+}
+.lb-name { font-weight: 800; font-size: 16px; color: var(--gold); }
+.lb-tags { display: flex; gap: 7px; flex-wrap: wrap; }
+.lu-lock { font-size: 12px; font-weight: 700; color: var(--rose); }
+.lu-ships { display: flex; flex-direction: column; gap: 10px; }
+.lu-ship {
+  text-align: left; padding: 13px 14px; border-radius: 14px; background: var(--glass);
+  border: 1.5px solid var(--line); transition: .15s; display: flex; flex-direction: column; gap: 8px;
+}
+.lu-ship:hover:not(:disabled) { border-color: rgba(255,215,106,.55); }
+.lu-ship.on { border-color: var(--gold); background: rgba(255,215,106,.1); box-shadow: 0 0 0 1px rgba(255,215,106,.35); }
+.lu-ship.on.own { border-color: var(--sky); background: rgba(126,203,255,.1); box-shadow: 0 0 0 1px rgba(126,203,255,.3); }
+.lu-ship:disabled { opacity: .6; cursor: not-allowed; }
+.ls-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ls-perf { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); }
+.ls-perf em { font-style: normal; color: var(--mint); font-weight: 700; margin-left: 3px; }
+.ls-perf em.low { color: var(--rose); }
+.ls-sub { font-size: 11px; color: var(--muted); }
+.lu-list { display: flex; flex-direction: column; gap: 8px; }
+.lu-crew {
+  display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
+  padding: 10px 12px; border-radius: 14px; background: var(--glass);
+  border: 1.5px solid var(--line); transition: .15s;
+}
+.lu-crew:hover:not(:disabled) { border-color: rgba(255,215,106,.5); }
+.lu-crew.on { border-color: var(--gold); background: rgba(255,215,106,.09); }
+.lu-crew:disabled { opacity: .6; cursor: not-allowed; }
+.lu-crew .crew-ava.none { background: rgba(255,255,255,.1); color: var(--muted); }
+.lu-pick { margin-left: auto; color: var(--gold); font-weight: 800; width: 18px; text-align: center; }
+.lu-foot {
+  position: sticky; bottom: 0; display: flex; gap: 10px; padding: 14px 20px;
+  background: rgba(20,22,58,.92); border-top: 1px solid var(--line); backdrop-filter: blur(10px);
+}
+.lu-foot .btn { flex: 1; }
+
 /* 卡片 - 磨砂玻璃 */
 .card {
   background: var(--glass); border: 1px solid var(--line); border-radius: var(--radius);

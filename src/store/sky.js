@@ -23,7 +23,9 @@ export const useSkyStore = defineStore('sky', {
     // 租赁艇型目录（性能/押金/租金/场次/费率均为服务端配置）
     rentalShop: s => s.state?.rentalShop || [],
     // 最近归还结算记录
-    rentalHistory: s => s.state?.rentalHistory || []
+    rentalHistory: s => s.state?.rentalHistory || [],
+    // 赛事排班：出场机师/技工/出赛艇（自有艇或在履租约艇）+ 可选项与加成预览
+    lineup: s => s.state?.lineup || null
   },
   actions: {
     async init() { this.state = await j('/api/state'); this.loaded = true },
@@ -41,6 +43,8 @@ export const useSkyStore = defineStore('sky', {
     async rentShip(id) { const r = await post('/api/rentals/rent', { id }); await this.refresh(); if (!r.ok) this.tip(r.msg); return r },
     // 归还租艇：按租约结算磨损费并退还押金；幂等，重复调用只结算一次
     async returnShip() { const r = await post('/api/rentals/return'); await this.refresh(); this.tip(r.msg); return r },
+    // 保存赛事排班：只提交机师/技工/租约 id（null = 不派人或自有艇出赛）；比赛进行中服务端拒绝
+    async saveLineup(patch) { const r = await post('/api/lineup', patch); if (r.ok) this.state = { ...this.state, lineup: r.lineup }; return r },
     // 开赛：生成完整比赛记录（分段过程+奖励已定）；已有 running 记录时返回同一份用于续看
     async startRace(cid) { return await post('/api/races/start/' + cid) },
     // 上报观赛进度（中断续看锚点）

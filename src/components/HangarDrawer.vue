@@ -69,8 +69,8 @@ async function returnShip() {
               <b class="mono">{{ p.v }}</b>
             </div>
           </div>
-          <button class="btn mint w-full" :disabled="!!store.airship.rental" @click="store.maintain()">
-            {{ store.airship.rental ? '🛟 租约艇由出租方整备' : '🔧 维护部件' }}
+          <button class="btn mint w-full" :disabled="!!store.lineup?.rentalId" @click="store.maintain()">
+            {{ store.lineup?.rentalId ? '🛟 排班租约艇由出租方整备' : '🔧 维护部件' }}
           </button>
         </div>
 
@@ -84,7 +84,10 @@ async function returnShip() {
           <div v-if="rental" class="rent-card active">
             <div class="rent-top">
               <b>{{ rental.name }}</b>
-              <span class="tag rose">租约履行中</span>
+              <span class="row gap8">
+                <span v-if="store.lineup?.rentalId === rental.id" class="tag o">📋 本场出赛艇</span>
+                <span class="tag rose">租约履行中</span>
+              </span>
             </div>
             <div class="rent-rows">
               <div class="rent-row"><span>剩余场次</span><b class="mono">{{ rental.max_races - rental.races_used }} / {{ rental.max_races }}</b></div>
@@ -175,7 +178,9 @@ async function returnShip() {
             <div v-for="p in store.state?.pilots || []" :key="p.id" class="crew-row">
               <div class="crew-ava" :style="{ background: 'linear-gradient(135deg,var(--gold2),var(--violet))' }">{{ p.name[0] }}</div>
               <div class="crew-m">
-                <div class="cm-name">{{ p.name }}<span class="tag b sm-tag">技巧{{ p.skill }}</span></div>
+                <div class="cm-name">{{ p.name }}<span class="tag b sm-tag">技巧{{ p.skill }}</span>
+                  <span v-if="store.lineup?.pilotId === p.id" class="tag o sm-tag">📋 本场出赛</span>
+                </div>
                 <div class="cm-sub">胆识 {{ p.courage }} · 经验 {{ p.exp }} · 心情 {{ p.mood }}</div>
               </div>
               <button class="btn ghost sm" @click="store.train(p.id)">🎓</button>
@@ -193,7 +198,9 @@ async function returnShip() {
             <div v-for="m in store.state?.mechanics || []" :key="m.id" class="crew-row">
               <div class="crew-ava" style="background:linear-gradient(135deg,var(--mint),var(--sky))">{{ m.name[0] }}</div>
               <div class="crew-m">
-                <div class="cm-name">{{ m.name }}<span class="tag m sm-tag">技能{{ m.skill }}</span></div>
+                <div class="cm-name">{{ m.name }}<span class="tag m sm-tag">技能{{ m.skill }}</span>
+                  <span v-if="store.lineup?.mechId === m.id" class="tag o sm-tag">📋 本场出赛</span>
+                </div>
                 <div class="cm-sub">心情 {{ m.mood }}</div>
               </div>
             </div>

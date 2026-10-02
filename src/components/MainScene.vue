@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useSkyStore } from '@/store/sky'
 const store = useSkyStore()
-const emit = defineEmits(['view'])
+const emit = defineEmits(['view', 'lineup'])
 
 const wIco = { '晴': '🌤️', '风': '🌬️', '雨': '🌧️', '雾': '🌫️', '雷暴': '⛈️' }
 // 浮岛在航线图上的坐标（左下→右上一条上升的航线）
@@ -34,14 +34,8 @@ async function go(c) {
   // 该赛站存在未结算的比赛 → 直接续看同一份记录
   if (active.value && activeCid.value === c.id) { emit('view', active.value, 'live'); return }
   if (!isOpen(c)) return
-  starting.value = true
-  // 开赛：服务器在这一刻生成完整比赛记录（分段过程、事件、奖励全部确定）
-  const r = await store.startRace(c.id)
-  if (r.ok) {
-    if (r.resumed) store.tip('继续观看未结束的比赛')
-    emit('view', r.race, 'live')
-  } else store.tip(r.msg || '当前还不能参加该站')
-  starting.value = false
+  // 开赛先进赛事排班确认：机师 / 技工 / 出赛艇（自有艇或在履租约艇）
+  emit('lineup', c)
 }
 // 顶部「中断续看」浮条
 function resume() { if (active.value) emit('view', active.value, 'live') }
@@ -128,7 +122,7 @@ function resume() { if (active.value) emit('view', active.value, 'live') }
         :disabled="starting || !(isOpen(c) || activeCid === c.id)"
         :title="isOpen(c) || activeCid === c.id ? '' : `请先完成前面的第 ${i} 站`"
         :style="{ left: (spots[i].x / 1060 * 100) + '%', top: ((spots[i].y - 8) / 600 * 100) + '%' }"
-        @click="go(c)">{{ activeCid === c.id ? '▶ 续看' : isOpen(c) ? '🚀 开赛' : '🔒 未解锁' }}</button>
+        @click="go(c)">{{ activeCid === c.id ? '▶ 续看' : isOpen(c) ? '📋 排班开赛' : '🔒 未解锁' }}</button>
     </div>
 
     <!-- 中断续看浮条：存在未结算比赛时出现，从上次观赛进度继续 -->

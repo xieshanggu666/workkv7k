@@ -29,8 +29,10 @@ function makeSandbox() {
   return dir
 }
 // 起一份全新服务：完成首次建表 + seed（不做脏修复），随即停服，返回直连 DB 供注入脏数据
+// Node 22 的 node:sqlite 仍需实验性标志（NODE_OPTIONS 透传给所有 spawn 出的子进程）
+const NODE_OPTS = { NODE_OPTIONS: ['--experimental-sqlite', process.env.NODE_OPTIONS].filter(Boolean).join(' ') }
 async function bootSeeded(dir, port) {
-  const proc = spawn(process.execPath, ['index.js'], { cwd: dir, env: { ...process.env, PORT: String(port) }, stdio: 'ignore' })
+  const proc = spawn(process.execPath, ['index.js'], { cwd: dir, env: { ...process.env, ...NODE_OPTS, PORT: String(port) }, stdio: 'ignore' })
   let state = null
   for (let i = 0; i < 100; i++) {
     try { state = await api(port, '/api/state'); if (state && state.team && state.circuits.length) break }
@@ -42,7 +44,7 @@ async function bootSeeded(dir, port) {
   return new DatabaseSync(path.join(dir, 'sky.db'))
 }
 function startServer(dir, port) {
-  return spawn(process.execPath, ['index.js'], { cwd: dir, env: { ...process.env, PORT: String(port) }, stdio: 'ignore' })
+  return spawn(process.execPath, ['index.js'], { cwd: dir, env: { ...process.env, ...NODE_OPTS, PORT: String(port) }, stdio: 'ignore' })
 }
 async function waitReady(port) {
   for (let i = 0; i < 100; i++) {
@@ -378,8 +380,124 @@ async function scenarioF() {
   } finally { if (proc) proc.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }) }
 }
 
+/* ============ 场景 G：赛事排班——阵容/出赛艇选择驱动比赛快照与结算归属 ============ */
+async function scenarioG() {
+  console.log('\n[场景 G] 赛事排班：机师/技工/出赛艇按排班上阵，磨损与经验归属随排班')
+  const PORT = 4407
+  const dir = makeSandbox()
+  let proc
+  try {
+    proc = startServer(dir, PORT)
+    await waitReady(PORT)
+    const s0 = await api(PORT, '/api/state')
+    const moneyBefore = s0.team.money
+    const ownPdBefore = s0.airship.parts_dur
+
+    // 默认排班：seed 最强机师/技工，自有艇出赛
+    const lu0 = (await api(PORT, '/api/lineup')).lineup
+    eq('默认排班为最强机师', lu0.pilotId, 1)
+    eq('默认排班为最强技工', lu0.mechId, 1)
+    eq('默认排班自有艇出赛', lu0.rentalId, null)
+
+    // 参数校验：字符串 id / 不存在人员 / 悬空租约 一律 400
+    const fetch400 = async (b) => (await fetch(`http://127.0.0.1:${PORT}/api/lineup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b)
+    })).status
+    eq('字符串 id 拒绝 400', await fetch400({ pilotId: '1' }), 400)
+    eq('不存在机师拒绝 400', await fetch400({ pilotId: 999 }), 400)
+    eq('悬空租约拒绝 400', await fetch400({ rentalId: 999 }), 400)
+    // null 合法：不派机师/技工，按基础加成出赛
+    eq('null 阵容可保存', (await post(PORT, '/api/lineup', { pilotId: null, mechId: null })).ok, true)
+
+    // 雇佣第二名机师并排他上阵；再租雨燕（签约自动排入租约艇）
+    await post(PORT, '/api/hire_pilot', {})
+    const s1 = await api(PORT, '/api/state')
+    const p2 = Math.max(...s1.pilots.map(p => p.id))
+    const rent = await post(PORT, '/api/rentals/rent', { id: 1 })
+    ok('签约雨燕成功', rent.ok)
+    const luAfterRent = (await api(PORT, '/api/lineup')).lineup
+    eq('签约后排班自动切到新租约艇', luAfterRent.rentalId, rent.id)
+    // 排班改回自有艇：在履租约封存，不占场次、不磨损
+    const saveOwn = await post(PORT, '/api/lineup', { pilotId: p2, mechId: null, rentalId: null })
+    ok('排班：新机师+无技工+自有艇', saveOwn.ok && saveOwn.lineup.pilotId === p2 && saveOwn.lineup.mechId === null)
+
+    // 开赛：记录快照必须与排班一致
+    const started = await post(PORT, '/api/races/start/1', {})
+    ok('开赛成功', started.ok)
+    const rid = started.race.id
+    const f = started.race.record.factors
+    eq('比赛快照机师=排班子（非默认最强）', f.pilot?.id ?? null, p2)
+    eq('比赛快照技工=null（按基础调校 +10）', f.mech, null)
+    eq('比赛快照样为自有艇（rental=null）', f.rental, null)
+    eq('快照明细技工调校为基础值 10', f.detail.mech, 10)
+
+    // 比赛进行中冻结排班：409
+    eq('比赛中保存排班返回 409', (await fetch(`http://127.0.0.1:${PORT}/api/lineup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pilotId: 1 })
+    })).status, 409)
+    // 比赛中归还租约同样被拒（既有规则），保证 running 期间出赛艇不会被排班外操作改动
+    eq('比赛中归还租约返回 409', (await post(PORT, '/api/rentals/return', {})).ok, false)
+
+    const wear1 = started.race.record.result.wear
+    const settled = await post(PORT, `/api/races/${rid}/settle`, {})
+    ok('结算成功', settled.ok && !settled.already)
+    const s2 = await api(PORT, '/api/state')
+    // 经验/心情只发给排班子：新机师经验 0→3，默认机师 id=1 经验不变（seed 为 20）
+    const pilotRows = new Map(s2.pilots.map(p => [p.id, p]))
+    eq('排班新机师获得经验 +3', pilotRows.get(p2).exp, 3)
+    eq('未上阵机师经验不变', pilotRows.get(1).exp, 20)
+    // 自有艇按排班出赛 → 自身磨损；租约封存零磨损零场次
+    eq('自有艇承担磨损', s2.airship.parts_dur, ownPdBefore - wear1)
+    const rtAfterOwn = s2.rental
+    eq('封存租约场次未增加', rtAfterOwn.races_used, 0)
+    eq('封存租约磨损为 0', rtAfterOwn.wear_total, 0)
+
+    // 改排租约艇再赛一场：磨损与场次必须记入租约，自有艇不再变化
+    await post(PORT, '/api/lineup', { rentalId: rent.id })
+    const started2 = await post(PORT, '/api/races/start/2', {})
+    ok('第二站开赛成功', started2.ok)
+    eq('第二站快照为租约艇', started2.race.record.factors.rental?.id ?? null, rent.id)
+    const wear2 = started2.race.record.result.wear
+    await post(PORT, `/api/races/${started2.race.id}/settle`, {})
+    const s3 = await api(PORT, '/api/state')
+    eq('租约计一场次', s3.rental.races_used, 1)
+    eq('租约累计磨损=本场磨损', s3.rental.wear_total, wear2)
+    eq('租约艇部件健康=100−磨损', s3.rental.parts_dur, 100 - wear2)
+    // 租约期间 /api/state 的 airship 镜像租约艇，封存的自有艇健康须直连 DB 验证
+    const dbhMid = new DatabaseSync(path.join(dir, 'sky.db'))
+    const ownMid = dbhMid.prepare('SELECT parts_dur FROM airships LIMIT 1').get()
+    dbhMid.close()
+    eq('自有艇本场封存不再磨损（直连 DB）', ownMid.parts_dur, ownPdBefore - wear1)
+
+    // 归还结算：排班自动回到自有艇；磨损费=累计磨损×费率，退款口径不变
+    const ret = await post(PORT, '/api/rentals/return', {})
+    eq('归还磨损费=累计磨损×35', ret.wearFee, wear2 * 35)
+    const luAfterReturn = (await api(PORT, '/api/lineup')).lineup
+    eq('归还后排班回到自有艇', luAfterReturn.rentalId, null)
+    const s4 = await api(PORT, '/api/state')
+    eq('归还后无在履租约', s4.rental, null)
+    eq('归还后自有艇健康仍为第一站后水平', s4.airship.parts_dur, ownPdBefore - wear1)
+
+    // 租约场次用尽拦截只针对「排班租约艇」：再租一场并跑满后，排班自有艇可继续，无需先归还
+    await post(PORT, '/api/rentals/rent', { id: 1 })
+    for (const cid of [3, 4]) {
+      const st = await post(PORT, `/api/races/start/${cid}`, {})
+      await post(PORT, `/api/races/${st.race.id}/settle`, {})
+    }
+    const usedRent = (await api(PORT, '/api/state')).rental
+    eq('雨燕 2 场租约已跑满', usedRent.max_races, 2)
+    eq('租约已用场次=2', usedRent.races_used, 2)
+    const blocked = await post(PORT, '/api/races/start/5', {})
+    ok('排班租约艇场次用尽拒绝开赛', !blocked.ok && /场次已用完/.test(blocked.msg))
+    await post(PORT, '/api/lineup', { rentalId: null })
+    const cont = await post(PORT, '/api/races/start/5', {})
+    ok('改派自有艇后无需归还即可继续参赛', cont.ok)
+    void moneyBefore
+  } finally { if (proc) proc.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }) }
+}
+
 const run = async () => {
-  await scenarioA(); await scenarioB(); await scenarioC(); await scenarioD(); await scenarioE(); await scenarioF()
-  console.log(`\n🎉 全部 ${pass} 项断言通过：结算 / 归还 / 越站回滚 / 赛季合约兑现边界统一，幂等且赛季数据一致`)
+  await scenarioA(); await scenarioB(); await scenarioC(); await scenarioD(); await scenarioE(); await scenarioF(); await scenarioG()
+  console.log(`\n🎉 全部 ${pass} 项断言通过：结算 / 归还 / 越站回滚 / 赛季合约 / 赛事排班边界统一，幂等且赛季数据一致`)
 }
 run().catch(e => { console.error('\n❌ 验证失败：', e); process.exit(1) })
